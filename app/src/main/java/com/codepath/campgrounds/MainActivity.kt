@@ -3,12 +3,15 @@ package com.codepath.campgrounds
 import android.os.Bundle
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.DividerItemDecoration
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.codepath.campgrounds.databinding.ActivityMainBinding
 import com.codepath.asynchttpclient.AsyncHttpClient
 import com.codepath.asynchttpclient.callback.JsonHttpResponseHandler
+import kotlinx.coroutines.Dispatchers.IO
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import okhttp3.Headers
 import org.json.JSONException
@@ -28,8 +31,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var campgroundsRecyclerView: RecyclerView
     private lateinit var binding: ActivityMainBinding
 
-    // TODO: Create campgrounds list
     private val campgrounds = mutableListOf<Campground>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -39,13 +42,30 @@ class MainActivity : AppCompatActivity() {
 
         campgroundsRecyclerView = findViewById(R.id.campgrounds)
 
-        // TODO: Set up CampgroundAdapter with campgrounds
         val campgroundAdapter = CampgroundAdapter(this, campgrounds)
         campgroundsRecyclerView.adapter = campgroundAdapter
 
         campgroundsRecyclerView.layoutManager = LinearLayoutManager(this).also {
             val dividerItemDecoration = DividerItemDecoration(this, it.orientation)
             campgroundsRecyclerView.addItemDecoration(dividerItemDecoration)
+        }
+
+        // Step 7: Load new items from our database
+        lifecycleScope.launch {
+            (application as CampgroundApplication).db.campgroundDao().getAll().collect { databaseList ->
+                databaseList.map { entity ->
+                    Campground(
+                        entity.name,
+                        entity.description,
+                        entity.latLong,
+                        listOf(CampgroundImage(entity.imageUrl, null))
+                    )
+                }.also { mappedList ->
+                    campgrounds.clear()
+                    campgrounds.addAll(mappedList)
+                    campgroundAdapter.notifyDataSetChanged()
+                }
+            }
         }
 
         val client = AsyncHttpClient()
@@ -62,27 +82,29 @@ class MainActivity : AppCompatActivity() {
             override fun onSuccess(statusCode: Int, headers: Headers, json: JSON) {
                 Log.i(TAG, "Successfully fetched campgrounds: $json")
                 try {
-                    // TODO: Create the parsedJSON
                     val parsedJson = createJson().decodeFromString(
                         CampgroundResponse.serializer(),
                         json.jsonObject.toString()
                     )
-                    // TODO: Do something with the returned json (contains campground information)
-                    parsedJson.data?.let { list ->
-                        campgrounds.addAll(list)
-                    }
-                    // TODO: Save the campgrounds and reload the screen
-                    parsedJson.data?.let { list ->
-                        campgrounds.addAll(list)
 
-                        // TODO: Notify the adapter that the dataset has changed
-                        campgroundAdapter.notifyDataSetChanged()
+                    // Save to database (this will trigger the Flow collector above)
+                    parsedJson.data?.let { list ->
+                        lifecycleScope.launch(IO) {
+                            (application as CampgroundApplication).db.campgroundDao().deleteAll()
+                            (application as CampgroundApplication).db.campgroundDao().insertAll(list.map {
+                                CampgroundEntity(
+                                    name = it.name,
+                                    description = it.description,
+                                    latLong = it.latLong,
+                                    imageUrl = it.images?.firstOrNull()?.url
+                                )
+                            })
+                        }
                     }
                 } catch (e: JSONException) {
                     Log.e(TAG, "Exception: $e")
                 }
             }
-
         })
     }
 }
